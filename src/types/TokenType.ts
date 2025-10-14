@@ -42,6 +42,8 @@ export enum TokenType {
     // Comentarios
     COMMENT = 'COMMENT',
 
+    ERROR = 'ERROR',
+
     // Otros
     EOF = 'EOF',
     UNKNOWN = 'UNKNOWN'

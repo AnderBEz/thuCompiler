@@ -1,5 +1,5 @@
 import { Token } from '../tokens/Token';
-import { TokenType } from '../types/tokenType';
+import { TokenType } from '../types/TokenType';
 
 export class Lexer {
     private input: string;
@@ -7,6 +7,7 @@ export class Lexer {
     private line: number;
     private column: number;
     private currentChar: string;
+    private errors: Token[] = [];
 
     // Palabras clave de Python
     private readonly KEYWORDS = [
@@ -100,10 +101,13 @@ export class Lexer {
         this.line = 1;
         this.column = 1;
         this.currentChar = this.input.length > 0 ? this.input[0] ?? '' : '';
+        this.errors = [];
     }
 
-    public tokenize(): Token[] {
+    // Método principal que devuelve tokens y errores
+    public tokenize(): { tokens: Token[], errors: Token[] } {
         const tokens: Token[] = [];
+        this.errors = [];
 
         while (this.position < this.input.length) {
             const token = this.getNextToken();
@@ -133,7 +137,16 @@ export class Lexer {
             column: this.column
         });
 
-        return tokens;
+        return {
+            tokens,
+            errors: this.errors
+        };
+    }
+
+    // Método compatible con versión anterior (solo tokens)
+    public getTokens(): Token[] {
+        const result = this.tokenize();
+        return result.tokens;
     }
 
     private getNextToken(): Token {
@@ -143,6 +156,15 @@ export class Lexer {
             if (match && match[0].length > 0) {
                 const value = match[0];
                 const startColumn = this.column;
+
+                // Validar strings antes de procesarlas
+                if (pattern.type === TokenType.STRING) {
+                    const stringError = this.validateString(value);
+                    if (stringError) {
+                        this.advance(value.length);
+                        return this.createErrorToken(value, startColumn, stringError.message, stringError.suggestion);
+                    }
+                }
 
                 this.advance(value.length);
 
@@ -159,15 +181,59 @@ export class Lexer {
             }
         }
 
+        // Carácter no reconocido - ERROR LÉXICO
         const unknownChar = this.currentChar;
+        const startColumn = this.column;
         this.advance(1);
 
-        return {
-            type: TokenType.UNKNOWN,
-            value: unknownChar,
+        return this.createErrorToken(
+            unknownChar,
+            startColumn,
+            `Carácter no reconocido: '${unknownChar}'`,
+            `Caracteres válidos: letras, números, operadores (+, -, *, /, etc.) y símbolos`
+        );
+    }
+
+    // Validación de strings para detectar errores
+    private validateString(value: string): { message: string; suggestion: string } | null {
+        // Verificar si la cadena no está cerrada
+        if ((value.startsWith('"') && !value.endsWith('"')) ||
+            (value.startsWith("'") && !value.endsWith("'"))) {
+            return {
+                message: "Cadena no cerrada correctamente",
+                suggestion: "Asegúrate de cerrar la cadena con la misma comilla que usaste para abrirla"
+            };
+        }
+
+        // Verificar escapes inválidos en strings normales (no docstrings)
+        if (!value.startsWith('"""') && !value.startsWith("'''")) {
+            const invalidEscape = value.match(/\\([^"\\'abfnrtv0])/);
+            if (invalidEscape) {
+                return {
+                    message: `Secuencia de escape inválida: \\${invalidEscape[1]}`,
+                    suggestion: "Secuencias de escape válidas: \\\", \\', \\\\, \\n, \\t, \\r, \\b, \\f, \\v, \\0"
+                };
+            }
+        }
+
+        return null;
+    }
+
+    // Crear token de error
+    private createErrorToken(value: string, column: number, message: string, suggestion?: string): Token {
+        const errorToken: Token = {
+            type: TokenType.ERROR,
+            value: value,
             line: this.line,
-            column: this.column - 1
+            column: column,
+            error: {
+                message,
+                suggestion: suggestion || "Revisa la sintaxis del código"
+            }
         };
+
+        this.errors.push(errorToken);
+        return errorToken;
     }
 
     private advance(steps: number): void {
@@ -181,7 +247,6 @@ export class Lexer {
 
             this.position++;
 
-            // CORRECCIÓN: Manejo seguro del currentChar
             if (this.position < this.input.length) {
                 const nextChar = this.input[this.position];
                 this.currentChar = nextChar ?? '';

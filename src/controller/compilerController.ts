@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { Lexer } from '../lexer/lexer'
+import { Lexer } from '../lexer/Lexer'
 
 export class CompilerController {
     public static tokenize(req: Request, res: Response): void {
@@ -14,13 +14,16 @@ export class CompilerController {
             }
 
             const lexer = new Lexer(sourceCode);
-            const tokens = lexer.tokenize();
+            const { tokens, errors } = lexer.tokenize();
 
             res.json({
                 success: true,
                 language: 'python',
                 tokens: tokens,
-                totalTokens: tokens.length
+                errors: errors,
+                totalTokens: tokens.length,
+                totalErrors: errors.length,
+                hasErrors: errors.length > 0
             });
 
         } catch (error) {
@@ -36,6 +39,7 @@ export class CompilerController {
             status: 'OK',
             message: 'Compilador Python backend funcionando correctamente',
             language: 'python',
+            features: ['Análisis léxico', 'Manejo de errores léxicos'],
             timestamp: new Date().toISOString()
         });
     }
