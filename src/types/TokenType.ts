@@ -44,6 +44,8 @@ export enum TokenType {
 
     ERROR = 'ERROR',
 
+    ASSIGN = 'ASSIGN',
+
     // Otros
     EOF = 'EOF',
     UNKNOWN = 'UNKNOWN'
