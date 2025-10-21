@@ -6,6 +6,10 @@ export interface ASTNode {
     value?: string;
     children?: ASTNode[];
     token?: Token;
+    operator?: string;
+    left?: ASTNode;
+    right?: ASTNode;
+    operand?: ASTNode;
 }
 
 export interface ParserError {
@@ -22,9 +26,8 @@ export class Parser {
     private errors: ParserError[];
 
     constructor(tokens: Token[]) {
-        // Filtrar tokens no deseados pero mantener los ERROR para reportarlos
-        this.tokens = tokens.filter(token => 
-            token.type !== TokenType.UNKNOWN && 
+        this.tokens = tokens.filter(token =>
+            token.type !== TokenType.UNKNOWN &&
             token.type !== TokenType.COMMENT
         );
         this.currentTokenIndex = 0;
@@ -33,22 +36,20 @@ export class Parser {
 
     public parse(): { ast: ASTNode | null, errors: ParserError[] } {
         const statements: ASTNode[] = [];
-        
+
         while (!this.isAtEnd()) {
             try {
-                // Saltar newlines al inicio
-                while (this.match(TokenType.NEWLINE)) {}
-                
+                while (this.match(TokenType.NEWLINE)) { }
+
                 if (this.isAtEnd()) break;
-                
+
                 const statement = this.parseStatement();
                 if (statement) {
                     statements.push(statement);
                 }
-                
-                // Saltar newlines después del statement
-                while (this.match(TokenType.NEWLINE)) {}
-                
+
+                while (this.match(TokenType.NEWLINE)) { }
+
             } catch (error) {
                 this.synchronize();
             }
@@ -67,10 +68,9 @@ export class Parser {
 
     private parseStatement(): ASTNode | null {
         if (this.isAtEnd()) return null;
-        
+
         const token = this.peek();
-        
-        // Si encontramos un error léxico, reportarlo y saltarlo
+
         if (token.type === TokenType.ERROR) {
             this.reportError(
                 token,
@@ -80,63 +80,24 @@ export class Parser {
             this.advance();
             return null;
         }
-        
-        // Asignación de variable (identificador seguido de =)
+
+        // Asignación de variable
         if (this.check(TokenType.IDENTIFIER) && this.checkNext(TokenType.ASSIGNMENT_OPERATOR)) {
             return this.parseAssignment();
         }
-        
-        // Expresión simple (solo si es un literal o identificador válido)
-        if (this.check(TokenType.IDENTIFIER) || 
-            this.check(TokenType.INTEGER) || 
-            this.check(TokenType.FLOAT) || 
-            this.check(TokenType.STRING) || 
-            this.check(TokenType.BOOLEAN) || 
-            this.check(TokenType.NONE)) {
-            
-            // Si es un identificador, verificar que no sea palabra clave en contexto incorrecto
-            if (this.check(TokenType.IDENTIFIER)) {
-                const identifier = this.peek();
-                this.validateIdentifier(identifier);
-            }
-            
-            const expr = this.parseExpression();
-            
-            // Si después de la expresión hay un =, es un error de sintaxis
-            if (this.check(TokenType.ASSIGNMENT_OPERATOR)) {
-                throw this.error(
-                    this.peek(),
-                    "No se puede asignar a un literal",
-                    "La asignación debe tener un identificador válido a la izquierda del ="
-                );
-            }
-            
-            return expr;
-        }
-        
-        // Palabra clave en contexto incorrecto
-        if (this.check(TokenType.KEYWORD)) {
-            const keyword = this.peek();
-            throw this.error(
-                keyword,
-                `Palabra clave '${keyword.value}' usada incorrectamente`,
-                "Las palabras clave no pueden usarse como identificadores o en este contexto"
-            );
-        }
-        
-        throw this.error(this.peek(), "Se esperaba una declaración o expresión válida");
+
+        // Parsear expresión
+        return this.parseExpression();
     }
 
     private parseAssignment(): ASTNode {
         const identifier = this.consume(TokenType.IDENTIFIER, "Se esperaba un identificador");
-        
-        // Validar identificador
         this.validateIdentifier(identifier);
-        
+
         this.consume(TokenType.ASSIGNMENT_OPERATOR, "Se esperaba '=' después del identificador");
-        
+
         const value = this.parseExpression();
-        
+
         return {
             type: 'Assignment',
             value: identifier.value,
@@ -145,44 +106,211 @@ export class Parser {
         };
     }
 
+    // GRAMÁTICA JERÁRQUICA CORREGIDA
     private parseExpression(): ASTNode {
+        return this.parseLogicalOr();
+    }
+
+    private parseLogicalOr(): ASTNode {
+        let expr = this.parseLogicalAnd();
+
+        while (this.matchOperator(TokenType.LOGICAL_OPERATOR, 'or')) {
+            const operator = this.previous();
+            const right = this.parseLogicalAnd();
+            expr = {
+                type: 'LogicalExpression',
+                operator: operator.value,
+                left: expr,
+                right: right,
+                token: operator
+            };
+        }
+
+        return expr;
+    }
+
+    private parseLogicalAnd(): ASTNode {
+        let expr = this.parseComparison();
+
+        while (this.matchOperator(TokenType.LOGICAL_OPERATOR, 'and')) {
+            const operator = this.previous();
+            const right = this.parseComparison();
+            expr = {
+                type: 'LogicalExpression',
+                operator: operator.value,
+                left: expr,
+                right: right,
+                token: operator
+            };
+        }
+
+        return expr;
+    }
+
+    private parseComparison(): ASTNode {
+        let expr = this.parseArithmetic();
+
+        while (this.match(
+            TokenType.COMPARISON_OPERATOR,
+            TokenType.IDENTITY_OPERATOR,
+            TokenType.MEMBERSHIP_OPERATOR
+        )) {
+            const operator = this.previous();
+            const right = this.parseArithmetic();
+            expr = {
+                type: 'ComparisonExpression',
+                operator: operator.value,
+                left: expr,
+                right: right,
+                token: operator
+            };
+        }
+
+        return expr;
+    }
+
+    private parseArithmetic(): ASTNode {
+        let expr = this.parseTerm();
+
+        while (this.matchOperator(TokenType.ARITHMETIC_OPERATOR, ['+', '-'])) {
+            const operator = this.previous();
+            const right = this.parseTerm();
+            expr = {
+                type: 'BinaryExpression',
+                operator: operator.value,
+                left: expr,
+                right: right,
+                token: operator
+            };
+        }
+
+        return expr;
+    }
+
+    private parseTerm(): ASTNode {
+        let expr = this.parseFactor();
+
+        while (this.matchOperator(TokenType.ARITHMETIC_OPERATOR, ['*', '/', '//', '%'])) {
+            const operator = this.previous();
+            const right = this.parseFactor();
+            expr = {
+                type: 'BinaryExpression',
+                operator: operator.value,
+                left: expr,
+                right: right,
+                token: operator
+            };
+        }
+
+        return expr;
+    }
+
+    private parseFactor(): ASTNode {
+        // Operadores unarios
+        if (this.matchOperator(TokenType.ARITHMETIC_OPERATOR, ['+', '-'])) {
+            const operator = this.previous();
+            const expr = this.parseFactor();
+            return {
+                type: 'UnaryExpression',
+                operator: operator.value,
+                operand: expr,
+                token: operator
+            };
+        }
+
+        if (this.matchOperator(TokenType.LOGICAL_OPERATOR, 'not')) {
+            const operator = this.previous();
+            const expr = this.parseFactor();
+            return {
+                type: 'UnaryExpression',
+                operator: operator.value,
+                operand: expr,
+                token: operator
+            };
+        }
+
+        // Paréntesis
+        if (this.match(TokenType.LPAREN)) {
+            const expr = this.parseExpression();
+            this.consume(TokenType.RPAREN, "Se esperaba ')' después de la expresión");
+            return expr;
+        }
+
+        // Literales e identificadores
         return this.parsePrimary();
     }
 
     private parsePrimary(): ASTNode {
         if (this.match(TokenType.IDENTIFIER)) {
             const token = this.previous();
-            // Ya validamos en parseStatement, pero por si acaso
             this.validateIdentifier(token);
-            return { type: 'Identifier', value: token.value, token };
+            return {
+                type: 'Identifier',
+                value: token.value,
+                token
+            };
         }
-        
+
         if (this.match(TokenType.INTEGER)) {
-            return { type: 'IntegerLiteral', value: this.previous().value, token: this.previous() };
+            return {
+                type: 'IntegerLiteral',
+                value: this.previous().value,
+                token: this.previous()
+            };
         }
-        
+
         if (this.match(TokenType.FLOAT)) {
-            return { type: 'FloatLiteral', value: this.previous().value, token: this.previous() };
+            return {
+                type: 'FloatLiteral',
+                value: this.previous().value,
+                token: this.previous()
+            };
         }
-        
+
         if (this.match(TokenType.STRING)) {
-            return { type: 'StringLiteral', value: this.previous().value, token: this.previous() };
+            return {
+                type: 'StringLiteral',
+                value: this.previous().value,
+                token: this.previous()
+            };
         }
-        
+
         if (this.match(TokenType.BOOLEAN)) {
-            return { type: 'BooleanLiteral', value: this.previous().value, token: this.previous() };
+            return {
+                type: 'BooleanLiteral',
+                value: this.previous().value,
+                token: this.previous()
+            };
         }
-        
+
         if (this.match(TokenType.NONE)) {
-            return { type: 'NoneLiteral', value: this.previous().value, token: this.previous() };
+            return {
+                type: 'NoneLiteral',
+                value: this.previous().value,
+                token: this.previous()
+            };
         }
-        
+
         throw this.error(this.peek(), "Se esperaba una expresión válida");
     }
 
-    // Validación de identificadores
+    // NUEVO MÉTODO PARA MATCH DE OPERADORES ESPECÍFICOS
+    private matchOperator(type: TokenType, expectedValues: string | string[]): boolean {
+        if (!this.check(type)) return false;
+
+        const current = this.peek();
+        const values = Array.isArray(expectedValues) ? expectedValues : [expectedValues];
+
+        if (values.includes(current.value)) {
+            this.advance();
+            return true;
+        }
+
+        return false;
+    }
+
+    // Validación de identificadores (sin cambios)
     private validateIdentifier(token: Token): void {
-        // Python: no puede empezar con número
         if (/^\d/.test(token.value)) {
             this.reportError(
                 token,
@@ -191,8 +319,7 @@ export class Parser {
             );
             return;
         }
-        
-        // Python: no puede ser una palabra clave
+
         const pythonKeywords = [
             'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await',
             'break', 'class', 'continue', 'def', 'del', 'elif', 'else',
@@ -200,7 +327,7 @@ export class Parser {
             'in', 'is', 'lambda', 'nonlocal', 'not', 'or', 'pass',
             'raise', 'return', 'try', 'while', 'with', 'yield'
         ];
-        
+
         if (pythonKeywords.includes(token.value)) {
             this.reportError(
                 token,
@@ -209,8 +336,7 @@ export class Parser {
             );
             return;
         }
-        
-        // Python: solo permite letras, números y _
+
         if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(token.value)) {
             this.reportError(
                 token,
@@ -220,7 +346,7 @@ export class Parser {
         }
     }
 
-    // Métodos auxiliares del parser
+    // Métodos auxiliares (sin cambios)
     private match(...types: TokenType[]): boolean {
         for (const type of types) {
             if (this.check(type)) {
@@ -250,7 +376,7 @@ export class Parser {
 
     private consume(type: TokenType, message: string): Token {
         if (this.check(type)) return this.advance();
-        
+
         throw this.error(this.peek(), message);
     }
 
@@ -293,29 +419,19 @@ export class Parser {
 
     private synchronize(): void {
         this.advance();
-        
+
         while (!this.isAtEnd()) {
             if (this.previous().type === TokenType.NEWLINE) return;
-            
+
             if (this.peek().type === TokenType.ERROR) {
                 this.advance();
                 continue;
             }
-            
-            // Buscar siguiente declaración válida
+
             if (this.peek().type === TokenType.IDENTIFIER) {
                 if (this.checkNext(TokenType.ASSIGNMENT_OPERATOR)) return;
             }
-            
-            if (this.check(TokenType.IDENTIFIER) || 
-                this.check(TokenType.INTEGER) || 
-                this.check(TokenType.FLOAT) || 
-                this.check(TokenType.STRING) || 
-                this.check(TokenType.BOOLEAN) || 
-                this.check(TokenType.NONE)) {
-                return;
-            }
-            
+
             this.advance();
         }
     }
